@@ -19,7 +19,7 @@
     ]
   },
   "include": [
-    "source"
+    "source:openAI"
   ],
   "exclude": [
     "node_modules",
