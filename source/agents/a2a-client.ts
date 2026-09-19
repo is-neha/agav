@@ -17,6 +17,16 @@ function assertLoopbackEndpoint(endpoint: string): void {
   }
 }
 
+const SHELL_CHAINING_CHARS = /[&|;><^%\n\r]/;
+
+export function validateA2ACommand(startCommand: string): void {
+  if (SHELL_CHAINING_CHARS.test(startCommand)) {
+    throw new Error(
+      `A2A start-command contains unsafe shell chaining characters: "${startCommand}"`
+    );
+  }
+}
+
 function parseCommandString(cmd: string): string[] {
   const parts: string[] = [];
   let current = "";
@@ -106,18 +116,33 @@ export async function startA2AAgent(agent: AgentDefinition): Promise<{ success: 
     return { success: false, error: e instanceof Error ? e.message : String(e) };
   }
 
+  if (process.platform === "win32") {
+    try {
+      validateA2ACommand(startCommand);
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   // Parse command and args (handles simple quoting)
   const parts = parseCommandString(startCommand);
   const command = parts[0]!;
   const args = parts.slice(1);
 
   try {
-    // TODO: start-command is unreviewed execution from a downloaded manifest.
-    // Add user confirmation at install or first run.
+    // On Windows, CLI tools and package managers (npm, npx, pnpm, yarn, etc.) are distributed
+    // as .cmd/.bat shell scripts and require shell: true to spawn without ENOENT errors.
+    // Untrusted start-commands are validated against shell chaining operators above to prevent shell injection.
     const proc = spawn(command, args, {
       cwd: agent.path,
       stdio: ["ignore", "pipe", "pipe"],
       shell: process.platform === "win32",
+      windowsHide: true,
+    });
+
+    proc.on("error", (err) => {
+      console.error(`[A2A ${key}] Process error: ${err.message}`);
+      managedAgents.delete(key);
     });
 
     proc.stdout?.on("data", (data) => {
