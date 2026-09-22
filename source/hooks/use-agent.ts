@@ -259,30 +259,24 @@ export function useAgent(
   const abortRef = useRef<AbortController | null>(null);
   
   const isPausedRef = useRef(false);
+  const pausePromiseRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null);
   const [isGenerationPaused, setIsGenerationPaused] = useState(false);
-  const isResumeRef = useRef(false);
-  const [resumeRequested, setResumeRequested] = useState(false);
 
   const togglePause = useCallback(() => {
     if (isPausedRef.current) {
       isPausedRef.current = false;
       setIsGenerationPaused(false);
-      setResumeRequested(true);
+      pausePromiseRef.current?.resolve();
+      pausePromiseRef.current = null;
     } else {
-      if (!abortRef.current) return;
       isPausedRef.current = true;
       setIsGenerationPaused(true);
-      abortRef.current.abort();
+      let r!: () => void;
+      const p = new Promise<void>((resolve) => { r = resolve; });
+      pausePromiseRef.current = { promise: p, resolve: r };
     }
   }, []);
 
-  const resetPauseState = useCallback(() => {
-    isPausedRef.current = false;
-    setIsGenerationPaused(false);
-    setResumeRequested(false);
-  }, []);
-
-  const turnDonePromiseRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null);
 
   const submitPendingRef = useRef(false);
   const configRef = useRef(config);
@@ -438,8 +432,13 @@ export function useAgent(
   const cancel = useCallback(() => {
     abortRef.current?.abort();
     confirmationQueueRef.current.clear();
-    resetPauseState();
-  }, [resetPauseState]);
+    if (pausePromiseRef.current) {
+      pausePromiseRef.current.resolve();
+      pausePromiseRef.current = null;
+    }
+    isPausedRef.current = false;
+    setIsGenerationPaused(false);
+  }, []);
 
   /** Cancel a single subagent by its ID while leaving others running. */
   const cancelSubagent = useCallback((id: string) => {
@@ -575,25 +574,18 @@ export function useAgent(
         return false;
       }
       if (submitPendingRef.current) return false;
-      
-      const isResume = isResumeRef.current;
-      isResumeRef.current = false;
 
       const trimmed = input.trim();
-      if (!trimmed && !isResume) return false;
+      if (!trimmed) return false;
       submitPendingRef.current = true;
 
       let expansion;
-      if (!isResume) {
-        try {
-          expansion = await expandFileMentions(trimmed, { cwd: process.cwd() });
-        } catch (err) {
-          setError(err instanceof Error ? err.message : String(err));
-          submitPendingRef.current = false;
-          return false;
-        }
-      } else {
-        expansion = { expanded: "", contentBlocks: [], warnings: [], displayText: "" };
+      try {
+        expansion = await expandFileMentions(trimmed, { cwd: process.cwd() });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        submitPendingRef.current = false;
+        return false;
       }
 
       const submittedText = expansion.expanded.trim();
@@ -605,27 +597,20 @@ export function useAgent(
 
       // Clear plan display when user sends a new message (not auto-continue).
       // If the plan is still active, turn_complete will reload it.
-      if (!displayText && !isResume) {
+      if (!displayText) {
         setActivePlan(null);
         // A real message from the user is fresh input for the current step, so
         // the no-progress budget starts over.
         resetPlanContinue();
       }
 
-      if (!isResume) {
-        setMessages((prev) => [
-          ...prev,
-          { id: nextId(), role: "user", content: visibleText, sourceText: trimmed, invocationReason },
-          ...(followUpMessages ?? []),
-        ]);
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: "user", content: visibleText, sourceText: trimmed, invocationReason },
+        ...(followUpMessages ?? []),
+      ]);
 
-        conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed, invocationReason);
-      } else if (displayText) {
-        setMessages((prev) => [
-          ...prev,
-          { id: nextId(), role: "system", content: displayText },
-        ]);
-      }
+      conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed, invocationReason);
 
       setIsLoading(true);
       updateTurnStart(Date.now());
@@ -635,12 +620,6 @@ export function useAgent(
 
       const abortController = new AbortController();
       abortRef.current = abortController;
-
-      let turnDoneResolve!: () => void;
-      turnDonePromiseRef.current = {
-        promise: new Promise<void>((r) => { turnDoneResolve = r; }),
-        resolve: turnDoneResolve,
-      };
 
       const confirmToolCallback = (
         toolName: string,
@@ -694,7 +673,8 @@ export function useAgent(
                 toolRegistryRef.current.register(agentToTool(agent, {
                   provider,
                   config: configRef.current,
-                  onProgressUpdate: (callId, event) => {
+                  onProgressUpdate: async (callId, event) => {
+                    if (pausePromiseRef.current) await pausePromiseRef.current.promise;
                     if (!trackerCache.has(callId)) {
                       trackerCache.set(callId, makeAgentProgressTracker(
                         callId,
@@ -755,6 +735,7 @@ export function useAgent(
               maxTokens: config.maxTokens,
               signal: abortController.signal,
             })) {
+              if (pausePromiseRef.current) await pausePromiseRef.current.promise;
               if (event.type === "text_delta") planJson += event.text;
               if (event.type === "usage") {
                 setTokenUsage((prev) => ({
@@ -851,6 +832,7 @@ export function useAgent(
           });
 
           for await (const event of loop) {
+            if (pausePromiseRef.current) await pausePromiseRef.current.promise;
             switch (event.type) {
               case "thinking":
                 currentThinking += event.text;
@@ -1075,9 +1057,6 @@ export function useAgent(
               }
 
               case "error": {
-                if (abortController.signal.aborted) {
-                  throw event.error;
-                }
                 const errorMsg = event.error.message || "Unknown error";
                 setMessages((prev) => [
                   ...prev,
@@ -1100,28 +1079,14 @@ export function useAgent(
           if (abortController.signal.aborted) {
             const partialText = currentText;
             if (partialText) {
-              if (isPausedRef.current) {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: nextId(),
-                    role: "assistant",
-                    content: partialText,
-                  },
-                ]);
-                conversationRef.current.addAssistantMessage([
-                  { type: "text", text: partialText },
-                ]);
-              } else {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: nextId(),
-                    role: "assistant",
-                    content: partialText + "\n\n*(cancelled)*",
-                  },
-                ]);
-              }
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: nextId(),
+                  role: "assistant",
+                  content: partialText + "\n\n*(cancelled)*",
+                },
+              ]);
             }
           } else {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -1137,7 +1102,6 @@ export function useAgent(
           }
           setIsLoading(false);
           finalizeTurnTimer();
-          resetPauseState();
         }
 
         setStreamingText("");
@@ -1145,8 +1109,12 @@ export function useAgent(
         setPendingConfirmation(null);
         abortRef.current = null;
         submitPendingRef.current = false;
-        turnDonePromiseRef.current?.resolve();
-        turnDonePromiseRef.current = null;
+        if (pausePromiseRef.current) {
+          pausePromiseRef.current.resolve();
+          pausePromiseRef.current = null;
+        }
+        isPausedRef.current = false;
+        setIsGenerationPaused(false);
       })();
       return true;
     },
@@ -1192,12 +1160,6 @@ export function useAgent(
       const abortController = new AbortController();
       abortRef.current = abortController;
 
-      let turnDoneResolve!: () => void;
-      turnDonePromiseRef.current = {
-        promise: new Promise<void>((r) => { turnDoneResolve = r; }),
-        resolve: turnDoneResolve,
-      };
-
       const confirmToolCallback = fullAccess
         ? undefined
         : (
@@ -1222,6 +1184,7 @@ export function useAgent(
             config: configRef.current,
             signal: abortController.signal,
             onProgressUpdate: async (callId, event) => {
+              if (pausePromiseRef.current) await pausePromiseRef.current.promise;
               if (!trackerCache.has(callId)) {
                 trackerCache.set(
                   callId,
@@ -1268,45 +1231,24 @@ export function useAgent(
         } finally {
           setIsLoading(false);
           finalizeTurnTimer();
-          resetPauseState();
           setSubagentStates([]);
           setStreamingText("");
           setToolCalls([]);
           setPendingConfirmation(null);
           abortRef.current = null;
           submitPendingRef.current = false;
-          turnDonePromiseRef.current?.resolve();
-          turnDonePromiseRef.current = null;
+          if (pausePromiseRef.current) {
+            pausePromiseRef.current.resolve();
+            pausePromiseRef.current = null;
+          }
+          isPausedRef.current = false;
+          setIsGenerationPaused(false);
         }
       })();
 
       return true;
     },
     [provider, config, saveNow],
-  );
-
-  /**
-   * While paused, cleanly abort the in-flight turn, preserve any partial output
-   * generated so far into the conversation history, and immediately begin a new
-   * turn with the user's prompt.
-   */
-  const interveneWhilePaused = useCallback(
-    async (
-      input: string,
-      extraBlocks?: ContentBlock[],
-      displayText?: string,
-      followUpMessages?: DisplayMessage[],
-      invocationReason?: InvocationReason,
-    ): Promise<boolean> => {
-      if (!isPausedRef.current) return false;
-      const trimmed = input.trim();
-      if (!trimmed && (!extraBlocks || extraBlocks.length === 0)) return false;
-
-      resetPauseState();
-
-      return submit(trimmed, extraBlocks, displayText, followUpMessages, invocationReason);
-    },
-    [resetPauseState, submit],
   );
 
   /** Reload agents from disk and rebuild the targeting slash commands. */
@@ -1331,13 +1273,31 @@ export function useAgent(
     }
   }, [isLoading, planContinueMsg, submit]);
 
-  useEffect(() => {
-    if (resumeRequested) {
-      setResumeRequested(false);
-      isResumeRef.current = true;
-      submit("", undefined, "▸ Resuming generation...");
-    }
-  }, [resumeRequested, submit]);
+  const interveneWhilePaused = useCallback(
+    async (
+      input: string,
+      extraBlocks?: ContentBlock[],
+      displayText?: string,
+      followUpMessages?: DisplayMessage[],
+      invocationReason?: InvocationReason,
+    ): Promise<boolean> => {
+      if (!isPausedRef.current) return false;
+      const trimmed = input.trim();
+      if (!trimmed && (!extraBlocks || extraBlocks.length === 0)) return false;
+
+      // Abort the active stream and resolve the pause so the loop exits
+      cancel();
+      
+      // Wait for the aborted turn to clear its pending state completely
+      while (submitPendingRef.current) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      // Start the new request
+      return submit(trimmed, extraBlocks, displayText, followUpMessages, invocationReason);
+    },
+    [cancel, submit]
+  );
 
   return {
     messages,
