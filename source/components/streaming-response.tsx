@@ -41,7 +41,7 @@ export default function StreamingResponse({ text, thinkingText, isLoading, showT
         <Box>
           <Text dimColor>{"  "}</Text>
           <Text color={isPaused ? "yellow" : "cyan"}>
-            {isPaused ? "αÑÑ" : <Spinner />}
+            {isPaused ? "⏸" : <Spinner />}
           </Text>
           <Text dimColor> {isPaused ? "Paused..." : "Thinking..."}</Text>
         </Box>
@@ -51,7 +51,7 @@ export default function StreamingResponse({ text, thinkingText, isLoading, showT
           <Box>
             <Text dimColor>{"  "}</Text>
             <Text color={isPaused ? "yellow" : "cyan"}>
-              {isPaused ? "αÑÑ" : <Spinner />}
+              {isPaused ? "⏸" : <Spinner />}
             </Text>
             <Text dimColor> {isPaused ? `Paused (${thinkingText.length} chars)...` : `Thinking (${thinkingText.length} chars)...`}</Text>
           </Box>

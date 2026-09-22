@@ -189,6 +189,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     lastTurnDurationMs,
     isGenerationPaused,
     togglePause,
+    interveneWhilePaused,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   /**
@@ -551,13 +552,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         return;
       }
     }
-    
-    if (key.ctrl && char === "p" && isLoading && !pendingConfirmation) {
+    const match = keyResolverRef.current.feed(char, key);
+    if (match.action === "togglePause" && isLoading && !pendingConfirmation) {
       togglePause();
       return;
     }
-
-    const match = keyResolverRef.current.feed(char, key);
     if (match.action === "interrupt" && isLoading && !pendingConfirmation) {
       cancel();
       return;
@@ -721,7 +720,28 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       const isSlashCommand = trimmed.startsWith("/")
         && attachments.length === 0
         && (!isLoading || isCommandAllowedMidTurn(commandName));
-      if (!isSlashCommand && isLoading) return;
+      if (!isSlashCommand && isLoading) {
+        if (isGenerationPaused && (trimmed || attachments.length > 0)) {
+          const extraBlocks: ContentBlock[] = attachments.map((attachment) => ({ ...attachment.contentBlock }));
+          const llmText = trimmed || "See attached content";
+          const imageIds = attachments.filter((a) => a.kind === "image").map((a) => a.id);
+          if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => {});
+          setInput("");
+          setAttachments([]);
+          lastPasteRef.current = null;
+          setShowToolDetail(false);
+          setPsResponse(undefined);
+          setSystemMessages([]);
+          void interveneWhilePaused(
+            llmText,
+            extraBlocks.length > 0 ? extraBlocks : undefined,
+            undefined,
+            undefined,
+            invocationReason,
+          );
+        }
+        return;
+      }
 
       if (isSlashCommand) {
         setInput("");
