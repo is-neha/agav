@@ -561,7 +561,6 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         return;
       }
       if (match.action === "editLastPrompt") {
-        if (suppressHistory) return;
         const previous = historyRef.current.at(-1);
         if (previous) {
           applyEdit(previous, previous.length);
