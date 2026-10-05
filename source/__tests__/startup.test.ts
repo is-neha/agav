@@ -7,6 +7,7 @@ import {
   resolveStartupSelection,
   selectConfiguredProvider,
 } from "../config/startup.js";
+import { parseArgs } from "../main.js";
 
 const base: AgavConfig = {
   provider: "anthropic",
@@ -22,6 +23,61 @@ vi.mock("../config/history.js", () => ({
   listSessions: vi.fn(),
 }));
 
+describe("parseArgs", () => {
+  it("parses --cwd with space separation", () => {
+    const flags = parseArgs(["--cwd", "/fake/path"]);
+    expect(flags.cwd).toBe("/fake/path");
+  });
+
+  it("parses --cwd= with equals separation", () => {
+    const flags = parseArgs(["--cwd=/fake/path"]);
+    expect(flags.cwd).toBe("/fake/path");
+  });
+
+  it("leaves flags.cwd undefined if --cwd is omitted", () => {
+    const flags = parseArgs(["--help"]);
+    expect(flags.cwd).toBeUndefined();
+  });
+
+  it("recognizes subcommands even when flags precede them", () => {
+    const runFlags = parseArgs(["--cwd", "/repo", "run"]);
+    expect(runFlags.run).toBe(true);
+
+    const agentFlags = parseArgs(["--cwd=/repo", "agents"]);
+    expect(agentFlags.agents).toBe(true);
+
+    const updateFlags = parseArgs(["--cwd", "/repo", "update"]);
+    expect(updateFlags.update).toBe(true);
+  });
+
+  it("treats missing or empty --cwd values as process exits", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    
+    parseArgs(["--cwd"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--cwd requires a directory argument"));
+    
+    mockExit.mockClear();
+    parseArgs(["--cwd="]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
+
+  it("does not consume another option flag as the --cwd argument", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    
+    parseArgs(["--cwd", "--help"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--cwd requires a directory argument"));
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
+});
 
 describe("startup provider and model resolution", () => {
   it("keeps configured selection for plain startup", async () => {

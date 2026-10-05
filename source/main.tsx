@@ -38,7 +38,7 @@ const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
-  "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
+  "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -122,6 +122,7 @@ function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<F
 export function parseArgs(argv: string[]) {
   const flags: Record<string, string | boolean> = {};
   let i = 0;
+  let subcommandSeen = false;
   while (i < argv.length) {
     const arg = argv[i]!;
     if (arg === "--") {
@@ -152,6 +153,20 @@ export function parseArgs(argv: string[]) {
       flags.outputSchema = argv[++i] ?? "";
     } else if (arg.startsWith("--output-schema=")) {
       flags.outputSchema = arg.slice("--output-schema=".length);
+    } else if (arg === "--cwd") {
+      const nextArg = argv[i + 1];
+      if (!nextArg || nextArg.startsWith("-")) {
+        process.stderr.write(`error: --cwd requires a directory argument\n`);
+        process.exit(1);
+      }
+      flags.cwd = argv[++i] ?? "";
+    } else if (arg.startsWith("--cwd=")) {
+      const val = arg.slice("--cwd=".length);
+      if (!val) {
+        process.stderr.write(`error: --cwd requires a directory argument\n`);
+        process.exit(1);
+      }
+      flags.cwd = val;
     } else if (arg === "--deny-writes") {
       flags.denyWrites = true;
     } else if (arg === "--resume" || arg === "-r") {
@@ -189,26 +204,31 @@ export function parseArgs(argv: string[]) {
       flags.maxTurns = argv[++i] ?? "";
     } else if (arg.startsWith("--max-turns=")) {
       flags.maxTurns = arg.slice("--max-turns=".length);
-    } else if (arg === "update" && i === 0) {
+    } else if (arg === "update" && !subcommandSeen) {
       flags.update = true;
+      subcommandSeen = true;
       if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
         flags.updateVersion = argv[++i]!;
       }
-    } else if (arg === "agents" && i === 0) {
+    } else if (arg === "agents" && !subcommandSeen) {
       flags.agents = true;
+      subcommandSeen = true;
       if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
         flags.agentsCommand = argv[++i]!;
       }
-    } else if (arg === "skills" && i === 0) {
+    } else if (arg === "skills" && !subcommandSeen) {
       flags.skills = true;
+      subcommandSeen = true;
       if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
         flags.skillsCommand = argv[++i]!;
       }
-    } else if (arg === "run" && i === 0) {
+    } else if (arg === "run" && !subcommandSeen) {
       flags.run = true;
+      subcommandSeen = true;
     } else if (flags.run && !arg.startsWith("-") && !flags.runPrompt) {
       flags.runPrompt = arg;
     } else if (arg.startsWith("-")) {
+
       const suggestion = findClosestFlag(arg);
       process.stderr.write(`error: unknown flag ${arg}${suggestion ? `\nDid you mean ${suggestion}?` : ""}\n`);
       process.exit(2);
@@ -399,9 +419,53 @@ export function hasStartupFinished(): boolean {
   return startupFinished;
 }
 
+function filterCwdFromArgv(argv: string[]): string[] {
+  const result: string[] = [];
+  let i = 0;
+  while (i < argv.length) {
+    if (argv[i] === "--cwd") {
+      i += 2;
+    } else if (argv[i]!.startsWith("--cwd=")) {
+      i += 1;
+    } else {
+      result.push(argv[i]!);
+      i += 1;
+    }
+  }
+  return result;
+}
+
 export async function main() {
   tempOutputManager.pruneStale();
   const flags = parseArgs(process.argv.slice(2));
+
+  let exitCode = 0;
+  if (typeof flags.cwd === "string") {
+    const { resolve } = await import("node:path");
+    const { statSync } = await import("node:fs");
+    const targetDir = resolve(process.cwd(), flags.cwd);
+    
+    let isDir = false;
+    try {
+      isDir = statSync(targetDir).isDirectory();
+    } catch {
+      // Ignored, isDir remains false
+    }
+
+    if (isDir) {
+      try {
+        process.chdir(targetDir);
+      } catch (error) {
+        process.stderr.write(`error: unable to access directory ${flags.cwd}\n`);
+        exitCode = 1;
+        if (!flags.help) process.exit(1);
+      }
+    } else {
+      process.stderr.write(`error: directory does not exist or is not a directory: ${flags.cwd}\n`);
+      exitCode = 1;
+      if (!flags.help) process.exit(1);
+    }
+  }
 
   if (flags.help) {
     console.log(`
@@ -419,6 +483,7 @@ export async function main() {
   Options
     --provider, -p       LLM provider: anthropic, openai, openrouter, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
+    --cwd <dir>          Set the working directory for the session
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
     --ollama-port        Ollama port (default: 11434)
@@ -463,7 +528,7 @@ export async function main() {
     $ agav agents install https://github.com/user/repo/agents/jira
     $ agav agents list
 `);
-    process.exit(0);
+    process.exit(exitCode);
   }
 
   if (flags.version) {
@@ -490,7 +555,8 @@ export async function main() {
     const argsStartIndex = agentsIdx >= 0
       ? agentsIdx + (agentsCommand ? 2 : 1)
       : (agentsCommand ? 4 : 3);
-    const exitCode = await runAgentsCommand(agentsCommand, process.argv.slice(argsStartIndex));
+    const delegatedArgs = filterCwdFromArgv(process.argv.slice(argsStartIndex));
+    const exitCode = await runAgentsCommand(agentsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
   }
@@ -504,10 +570,12 @@ export async function main() {
     const argsStartIndex = skillsIdx >= 0
       ? skillsIdx + (skillsCommand ? 2 : 1)
       : (skillsCommand ? 4 : 3);
-    const exitCode = await runSkillsCommand(skillsCommand, process.argv.slice(argsStartIndex));
+    const delegatedArgs = filterCwdFromArgv(process.argv.slice(argsStartIndex));
+    const exitCode = await runSkillsCommand(skillsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
   }
+
 
   // Auto-update check (silent on failure, skipped in CI/pipe mode)
   try {
