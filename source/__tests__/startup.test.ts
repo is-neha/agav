@@ -77,6 +77,36 @@ describe("parseArgs", () => {
     mockExit.mockRestore();
     mockStderr.mockRestore();
   });
+
+  it("collects positionals accurately even when global flags are interspersed", () => {
+    const flags = parseArgs(["skills", "--cwd", "/repo", "remove", "target"]);
+    expect(flags.skills).toBe(true);
+    expect(flags.skillsCommand).toBe("remove");
+    expect(flags._).toEqual(["remove", "target"]);
+  });
+
+  it("safely ignores global flags masquerading as subcommand arguments", () => {
+    // Tests: agav --cwd skills skills remove target
+    const flags = parseArgs(["--cwd", "skills", "skills", "remove", "target"]);
+    expect(flags.cwd).toBe("skills");
+    expect(flags.skills).toBe(true);
+    expect(flags.skillsCommand).toBe("remove");
+    expect(flags._).toEqual(["remove", "target"]);
+  });
+
+  it("safely passes unknown flags to the leftover array if a subcommand is active", () => {
+    const flags = parseArgs(["agents", "--alias", "foo", "install", "url"]);
+    expect(flags.agents).toBe(true);
+    expect(flags._).toEqual(["--alias", "foo", "install", "url"]);
+    expect(flags.agentsCommand).toBe("--alias"); // The action verb is unfortunately seen as the flag, working as intended for POSIX.
+  });
+
+  it("stops flag parsing completely after the -- separator", () => {
+    const flags = parseArgs(["skills", "remove", "--", "--version"]);
+    expect(flags.skills).toBe(true);
+    expect(flags.version).toBeUndefined(); // It did NOT trigger global --version!
+    expect(flags._).toEqual(["remove", "--version"]); // The subcommand receives --version safely.
+  });
 });
 
 describe("startup provider and model resolution", () => {

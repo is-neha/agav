@@ -118,17 +118,26 @@ function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<F
   });
 }
 
-/** Parse CLI flags into a lightweight record before config loading and validation. */
 export function parseArgs(argv: string[]) {
-  const flags: Record<string, string | boolean> = {};
+  const flags: Record<string, any> = {};
+  flags._ = [];
   let i = 0;
   let subcommandSeen = false;
+  let dashDashSeen = false;
+
   while (i < argv.length) {
     const arg = argv[i]!;
     if (arg === "--") {
+      dashDashSeen = true;
       i++;
       continue;
     }
+    if (dashDashSeen) {
+      flags._.push(arg);
+      i++;
+      continue;
+    }
+    
     if (arg === "--help" || arg === "-h") {
       flags.help = true;
     } else if (arg === "--version" || arg === "-v") {
@@ -189,9 +198,7 @@ export function parseArgs(argv: string[]) {
       flags.ollamaApiKey = arg.split("=")[1] ?? "";
     } else if (arg === "--print" || arg === "-P") {
       flags.print = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.printPrompt = argv[++i]!;
-      }
+      subcommandSeen = true;
     } else if (arg === "--permission") {
       flags.permission = argv[++i] ?? "";
     } else if (arg.startsWith("--permission=")) {
@@ -207,34 +214,36 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "update" && !subcommandSeen) {
       flags.update = true;
       subcommandSeen = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.updateVersion = argv[++i]!;
-      }
     } else if (arg === "agents" && !subcommandSeen) {
       flags.agents = true;
       subcommandSeen = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.agentsCommand = argv[++i]!;
-      }
     } else if (arg === "skills" && !subcommandSeen) {
       flags.skills = true;
       subcommandSeen = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.skillsCommand = argv[++i]!;
-      }
     } else if (arg === "run" && !subcommandSeen) {
       flags.run = true;
       subcommandSeen = true;
-    } else if (flags.run && !arg.startsWith("-") && !flags.runPrompt) {
-      flags.runPrompt = arg;
     } else if (arg.startsWith("-")) {
-
-      const suggestion = findClosestFlag(arg);
-      process.stderr.write(`error: unknown flag ${arg}${suggestion ? `\nDid you mean ${suggestion}?` : ""}\n`);
-      process.exit(2);
+      if (subcommandSeen && (flags.agents || flags.skills)) {
+        flags._.push(arg);
+      } else {
+        const suggestion = findClosestFlag(arg);
+        process.stderr.write(`error: unknown flag ${arg}${suggestion ? `\nDid you mean ${suggestion}?` : ""}\n`);
+        process.exit(2);
+      }
+    } else {
+      flags._.push(arg);
     }
     i++;
   }
+
+  const pos = flags._ as string[];
+  if (flags.update && pos.length > 0) flags.updateVersion = pos[0];
+  if (flags.agents && pos.length > 0) flags.agentsCommand = pos[0];
+  if (flags.skills && pos.length > 0) flags.skillsCommand = pos[0];
+  if (flags.run && pos.length > 0) flags.runPrompt = pos[0];
+  if (flags.print && pos.length > 0) flags.printPrompt = pos[0];
+
   return flags;
 }
 
@@ -419,22 +428,6 @@ export function hasStartupFinished(): boolean {
   return startupFinished;
 }
 
-function filterCwdFromArgv(argv: string[]): string[] {
-  const result: string[] = [];
-  let i = 0;
-  while (i < argv.length) {
-    if (argv[i] === "--cwd") {
-      i += 2;
-    } else if (argv[i]!.startsWith("--cwd=")) {
-      i += 1;
-    } else {
-      result.push(argv[i]!);
-      i += 1;
-    }
-  }
-  return result;
-}
-
 export async function main() {
   tempOutputManager.pruneStale();
   const flags = parseArgs(process.argv.slice(2));
@@ -550,12 +543,7 @@ export async function main() {
   if (flags.agents) {
     const { runAgentsCommand } = await import("./cli/agents-cli.js");
     const agentsCommand = typeof flags.agentsCommand === "string" ? flags.agentsCommand : undefined;
-    // Find "agents" position in argv to correctly slice remaining args
-    const agentsIdx = process.argv.indexOf("agents");
-    const argsStartIndex = agentsIdx >= 0
-      ? agentsIdx + (agentsCommand ? 2 : 1)
-      : (agentsCommand ? 4 : 3);
-    const delegatedArgs = filterCwdFromArgv(process.argv.slice(argsStartIndex));
+    const delegatedArgs = (flags._ as string[]).slice(1);
     const exitCode = await runAgentsCommand(agentsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
@@ -565,12 +553,7 @@ export async function main() {
   if (flags.skills) {
     const { runSkillsCommand } = await import("./cli/skills-cli.js");
     const skillsCommand = typeof flags.skillsCommand === "string" ? flags.skillsCommand : undefined;
-    // Find "skills" position in argv to correctly slice remaining args
-    const skillsIdx = process.argv.indexOf("skills");
-    const argsStartIndex = skillsIdx >= 0
-      ? skillsIdx + (skillsCommand ? 2 : 1)
-      : (skillsCommand ? 4 : 3);
-    const delegatedArgs = filterCwdFromArgv(process.argv.slice(argsStartIndex));
+    const delegatedArgs = (flags._ as string[]).slice(1);
     const exitCode = await runSkillsCommand(skillsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
