@@ -238,11 +238,22 @@ export function parseArgs(argv: string[]) {
   }
 
   const pos = flags._ as string[];
-  if (flags.update && pos.length > 0) flags.updateVersion = pos[0];
+  if (flags.update) {
+    if (pos.length > 0) flags.updateVersion = pos[0];
+    if (pos.length > 1) {
+      process.stderr.write(`error: agav update accepts at most 1 argument\n`);
+      process.exit(1);
+    }
+  }
   if (flags.agents && pos.length > 0) flags.agentsCommand = pos[0];
   if (flags.skills && pos.length > 0) flags.skillsCommand = pos[0];
-  if (flags.run && pos.length > 0) flags.runPrompt = pos[0];
-  if (flags.print && pos.length > 0) flags.printPrompt = pos[0];
+  if (flags.run && pos.length > 0) flags.runPrompt = pos.join(" ");
+  if (flags.print && pos.length > 0) flags.printPrompt = pos.join(" ");
+  
+  if (!flags.update && !flags.agents && !flags.skills && !flags.run && !flags.print && pos.length > 0) {
+     process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
+     process.exit(1);
+  }
 
   return flags;
 }

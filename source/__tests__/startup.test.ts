@@ -107,6 +107,40 @@ describe("parseArgs", () => {
     expect(flags.version).toBeUndefined(); // It did NOT trigger global --version!
     expect(flags._).toEqual(["remove", "--version"]); // The subcommand receives --version safely.
   });
+
+  it("joins multiple positionals for run and print, allowing unquoted usage", () => {
+    const flags = parseArgs(["run", "explain", "this", "file"]);
+    expect(flags.run).toBe(true);
+    expect(flags.runPrompt).toBe("explain this file");
+
+    const flags2 = parseArgs(["--print", "hello", "world"]);
+    expect(flags2.print).toBe(true);
+    expect(flags2.printPrompt).toBe("hello world");
+  });
+
+  it("rejects extra positionals for update", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    
+    parseArgs(["update", "0.2.4", "extra"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("agav update accepts at most 1 argument"));
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
+
+  it("rejects leftover positionals if no command accepts them", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    
+    parseArgs(["hello"]); // "hello" is unhandled
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("unexpected arguments: hello"));
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
 });
 
 describe("startup provider and model resolution", () => {
