@@ -143,6 +143,57 @@ describe("parseArgs", () => {
   });
 });
 
+describe("subcommand strict argument parsing", () => {
+  it("rejects unknown flags for skills clear", async () => {
+    const { runSkillsCommand } = await import("../cli/skills-cli.js");
+    const mockStderr = vi.spyOn(console, "error").mockImplementation(() => true);
+    
+    const code = await runSkillsCommand("clear", ["--bogus"]);
+    expect(code).toBe(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("Unknown option '--bogus'"));
+    
+    mockStderr.mockRestore();
+  });
+
+  it("rejects misspelled options for agents remove", async () => {
+    const { runAgentsCommand } = await import("../cli/agents-cli.js");
+    const mockStderr = vi.spyOn(console, "error").mockImplementation(() => true);
+    
+    const code = await runAgentsCommand("remove", ["target", "--destinatoin", "project"]);
+    expect(code).toBe(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("Unknown option '--destinatoin'"));
+    
+    mockStderr.mockRestore();
+  });
+
+  it("rejects missing values for valid agent options", async () => {
+    const { runAgentsCommand } = await import("../cli/agents-cli.js");
+    const mockStderr = vi.spyOn(console, "error").mockImplementation(() => true);
+    
+    const code = await runAgentsCommand("remove", ["target", "--destination"]);
+    expect(code).toBe(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--destination must be 'global' or 'project'"));
+    
+    mockStderr.mockRestore();
+  });
+
+  it("joins unquoted paths for skill installation", async () => {
+    // This isn't an error case, we just want to ensure it joins spaces correctly without crashing
+    const { runSkillsCommand } = await import("../cli/skills-cli.js");
+    const mockStderr = vi.spyOn(console, "error").mockImplementation(() => true);
+    const mockLog = vi.spyOn(console, "log").mockImplementation(() => true);
+    
+    // We expect it to try installing from "C:/My Skills/Tool" and fail gracefully 
+    // at the file-system level, NOT at the argument-parsing level.
+    const code = await runSkillsCommand("add", ["C:/My", "Skills/Tool"]);
+    // The installer should log the joined path
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("C:/My Skills/Tool"));
+    
+    mockStderr.mockRestore();
+    mockLog.mockRestore();
+  });
+});
+
 describe("startup provider and model resolution", () => {
   it("keeps configured selection for plain startup", async () => {
     expect(await resolveStartupSelection(base, {})).toMatchObject({
